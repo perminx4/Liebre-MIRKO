@@ -1,0 +1,61 @@
+name: Build iOS LIEBRE (IPA sin firmar)
+
+# Se ejecuta SOLO a mano: pestaña Actions -> "Build iOS LIEBRE" -> Run workflow
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1) Encuentra solo donde esta el pubspec.yaml (en la raiz o en una subcarpeta)
+      - name: Buscar el proyecto Flutter
+        run: |
+          PUBSPEC=$(find . -name pubspec.yaml -not -path "*/.*" -not -path "*/build/*" | head -1)
+          if [ -z "$PUBSPEC" ]; then echo "ERROR: no se encontro pubspec.yaml"; exit 1; fi
+          echo "Proyecto en: $PUBSPEC"
+          echo "PROJECT_DIR=$(dirname "$PUBSPEC")" >> $GITHUB_ENV
+
+      # 2) Al bajar el ZIP desde Windows algunos archivos de iOS quedaron con ".xml" de mas
+      - name: Arreglar nombres de archivos iOS (sobra el .xml al final)
+        run: |
+          cd "$PROJECT_DIR/ios"
+          find . \( -name "*.storyboard.xml" -o -name "*.xcscheme.xml" -o -name "*.xcworkspacedata.xml" -o -name "*.xcsettings.xml" \) -print | while read f; do
+            echo "Renombrando: $f"
+            mv "$f" "${f%.xml}"
+          done
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.32.8"
+          channel: stable
+          cache: true
+
+      # 3) El proyecto mezcla 15.0 y 17.6; el Podfile pide 15.0. Se deja todo en 15.0
+      - name: Unificar el iOS minimo en 15.0
+        run: sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 17.6;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' "$PROJECT_DIR/ios/Runner.xcodeproj/project.pbxproj"
+
+      - name: Dependencias
+        run: cd "$PROJECT_DIR" && flutter pub get
+
+      - name: Generar iconos de la app
+        run: cd "$PROJECT_DIR" && (dart run flutter_launcher_icons || echo "AVISO - no se pudieron generar los iconos, sigo igual")
+
+      # 4) Build en RELEASE (un build debug se cierra solo al abrirlo desde el icono)
+      - name: Compilar iOS sin firmar
+        run: cd "$PROJECT_DIR" && flutter build ios --release --no-codesign
+
+      - name: Armar el IPA
+        run: |
+          cd "$PROJECT_DIR/build/ios/iphoneos"
+          mkdir Payload
+          cp -R Runner.app Payload/
+          zip -qr LIEBRE.ipa Payload
+
+      - name: Subir IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LIEBRE_ipa
+          path: ${{ env.PROJECT_DIR }}/build/ios/iphoneos/LIEBRE.ipa
